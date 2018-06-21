@@ -6,6 +6,7 @@
 #include "noise_suppression_x.h"
 #include "noise_suppression.h"
 #include "gain_control.h"
+#include "echo_cancellation.h"
 
 void webRtcNsProc(short * pData, FILE *outfilenameNs,int frames,short * pOutData,int* filter_state1,int* filter_state12,int* Synthesis_state1,int* Synthesis_state12)
 {
@@ -59,11 +60,8 @@ void webRtcNsProc(short * pData, FILE *outfilenameNs,int frames,short * pOutData
 void WebRtcAgcProc(short * pData, FILE * outfilename,int frames,short * pOutData)
 {
 
-	fprintf(stderr,"AGC pData data: %d ... %d \n",*pData,*(pData+frames-1));
 	void *agcHandle = NULL;	
-	fprintf(stderr,"AGC pOutDataInit data: %d ... %d\n",*pOutData,*(pOutData+frames-1));
 	int fs = 16000;
-
 	WebRtcAgc_Create(&agcHandle);
 
 	int minLevel = 0;
@@ -88,8 +86,7 @@ void WebRtcAgcProc(short * pData, FILE * outfilename,int frames,short * pOutData
 	int outMicLevel = 0;
 	uint8_t saturationWarning;
 	int nAgcRet = WebRtcAgc_Process(agcHandle, pData, NULL, frames, pOutData,NULL, inMicLevel, &outMicLevel, 0, &saturationWarning);
-	fprintf(stderr,"AGC pOutDataFinal data: %d ... %d\n",*pOutData,*(pOutData+frames-1));
-	fprintf(stderr,"AGC pOutDataFinal adress: %d \n",pOutData);
+
 	if (nAgcRet != 0)
 	{
 		printf("failed in WebRtcAgc_Process %d \n",nAgcRet);
@@ -100,6 +97,28 @@ void WebRtcAgcProc(short * pData, FILE * outfilename,int frames,short * pOutData
 	WebRtcAgc_Free(agcHandle);
 }
 
+void WebRtcAecProc(short *near_frame,short* far_frame,FILE * fp_out,int frames,short * out_frame)
+{
+
+	int fs = 16000;
+	int len = frames*sizeof(short);
+	void *aecmInst = NULL;
+
+	WebRtcAec_Create(&aecmInst);
+	WebRtcAec_Init(aecmInst, fs, fs);
+
+	AecConfig config;
+	config.nlpMode = 0;
+	WebRtcAec_set_config(aecmInst, config);
+
+	WebRtcAec_BufferFarend(aecmInst, far_frame, frames);//对参考声音(回声)的处理
+	WebRtcAec_Process(aecmInst, near_frame, NULL, out_frame, NULL, frames,40,0);//回声消除
+
+	fwrite(out_frame, 1, len, fp_out);
+
+	WebRtcAec_Free(aecmInst);
+
+}
 
 int main()
 {
@@ -117,8 +136,13 @@ int main()
    short * buffertemp3 = NULL;		// 一个临时字符型指针
    short * buffertemp4 = NULL;		// 一个临时字符型指针
    short * buffertemp5 = NULL;		// 一个临时字符型指针
+   short * buffertempmicin = NULL;		// 一个临时字符型指针
+   short * buffertempspeaker = NULL;		// 一个临时字符型指针
    short * bufferAgcOutData = NULL;	// 指向Agc输出数据地址的指针
    short * bufferNsOutData = NULL;	// 指向NS输出数据地址的指针
+   short * bufferAecOutData = NULL;	// 指向NS输出数据地址的指针
+   short * bufferAecMicinData = NULL;	// 指向NS输出数据地址的指针
+   short * bufferAecSpeakerData = NULL;	// 指向NS输出数据地址的指针
 
    int  filter_state1[6],filter_state12[6];
    int  Synthesis_state1[6],Synthesis_state12[6];
@@ -126,7 +150,7 @@ int main()
    memset(filter_state12,0,sizeof(filter_state12));
    memset(Synthesis_state1,0,sizeof(Synthesis_state1));
    memset(Synthesis_state12,0,sizeof(Synthesis_state12));
-   FILE * out_fd1,*out_fd2,*out_fd3,*out_fd4,*out_fd5,*out_fd6,*out_fdAgc,*out_fdNs;		// 一个指向文件的指针 
+   FILE * out_fd1,*out_fd2,*out_fd3,*out_fd4,*out_fd5,*out_fd6,*out_fdAgc,*out_fdNs,*out_fdAec;		// 一个指向文件的指针 
    out_fd1 = fopen("out_pcm1.raw","wb+");
    out_fd2 = fopen("out_pcm2.raw","wb+");
    out_fd3 = fopen("out_pcm3.raw","wb+");
@@ -135,7 +159,7 @@ int main()
    out_fd6 = fopen("out_pcm6.raw","wb+");
    out_fdAgc = fopen("out_pcmAgc.raw","wb+");
    out_fdNs = fopen("out_pcmNs.raw","wb+");
-   // out_fdAec = fopen("out_pcmAec.raw","wb+");		
+   out_fdAec = fopen("out_pcmAec.raw","wb+");		
 /* 将流与文件之间的关系建立起来，文件名为 out_pcm.raw，w是以文本方式打开文件，wb是二进制方式打开文件wb+ 读写打开或建立一个二进制文件，允许读和写。*/ 
    /* open PCM device for recording (capture). */
    // 访问硬件，并判断硬件是否访问成功 
@@ -188,6 +212,9 @@ int main()
    buffertemp4 = ( short * )malloc(frames*sizeof(short));
    bufferAgcOutData = ( short * )malloc(frames*sizeof(short));
    bufferNsOutData = ( short * )malloc(frames*sizeof(short));
+   bufferAecOutData = ( short * )malloc(frames*sizeof(short));
+   bufferAecMicinData = ( short * )malloc(frames*sizeof(short));
+   bufferAecSpeakerData = ( short * )malloc(frames*sizeof(short));
 
    // 记录声音的长度，单位uS 
    snd_pcm_hw_params_get_period_time(params, &val, &dir);
@@ -210,49 +237,69 @@ int main()
        {
           fprintf(stderr,"short read, read %d frames\n",rc);
        }
+
        // 将音频数据写入文件，把buffer中的数据写入到out-fd中
 	buffertemp1 = buffer;
 	buffertemp2 = buffer;
 	buffertemp5 = buffertemp4;
+	buffertempmicin = bufferAecMicinData;
+	buffertempspeaker = bufferAecSpeakerData;
+
 	fprintf(stderr,"buffertemp4 adress: %d \n",buffertemp4);
 	fprintf(stderr,"buffertemp5pre adress: %d \n",buffertemp5);
+
 	int loopfor;
 	for(loopfor = 1;loopfor <= frames;loopfor++)
 	    {
 		fprintf(stderr,"loopfor data:  %d \n",loopfor);
 		int loopwhile = 6;
 		fprintf(stderr,"buffertemp2 data: %d %d %d %d %d %d\n",*buffertemp2,*buffertemp2++,*buffertemp2++,*buffertemp2++,*buffertemp2++,*buffertemp2++);
-		// fprintf(stderr,"buffertemp2 data: %d %d %d %d %d %d %d %d %d %d %d %d\n",*buffertemp2,*buffertemp2++,*buffertemp2++,*buffertemp2++,*buffertemp2++,*buffertemp2++,*buffertemp2++,*buffertemp2++,*buffertemp2++,*buffertemp2++,*buffertemp2++,*buffertemp2++);
 		
 		buffertemp2++;
 
-		fprintf(stderr,"buffertemp1 data: %d \n",*buffertemp1);
 		buffertemp3 = buffertemp1;
 		rc1 = fwrite(buffertemp3, 1, 2, out_fd1);
+
 		buffertemp3 = buffertemp3 + 1;
 		rc2 = fwrite(buffertemp3, 1, 2, out_fd2);
 		*buffertemp5 = *buffertemp3;
-		fprintf(stderr,"buffertemp5 data: %d %d %d \n",*(buffertemp5-2),*(buffertemp5-1),*buffertemp5);
-	 	fprintf(stderr,"buffertemp5framesin adress: %d \n",buffertemp5);
 		buffertemp5++;
+
 		buffertemp3 = buffertemp3 + 1;
 		rc3 = fwrite(buffertemp3, 1, 2, out_fd3);
+		*buffertempmicin = *buffertemp3;
+		fprintf(stderr,"buffertempmicin data: %d %d %d \n",*(buffertempmicin-2),*(buffertempmicin-1),*buffertempmicin);
+	 	fprintf(stderr,"buffertempmicinframesin adress: %d \n",buffertempmicin);
+		buffertempmicin++;
+
 		buffertemp3 = buffertemp3 + 1;
 		rc4 = fwrite(buffertemp3, 1, 2, out_fd4);
+
 		buffertemp3 = buffertemp3 + 1;
 		rc5 = fwrite(buffertemp3, 1, 2, out_fd5);
+
 		buffertemp3 = buffertemp3 + 1;
 		rc6 = fwrite(buffertemp3, 1, 2, out_fd6);
+		*buffertempspeaker = *buffertemp3;
+		fprintf(stderr,"buffertempspeaker data: %d %d %d \n",*(buffertempspeaker-2),*(buffertempspeaker-1),*buffertempspeaker);
+	 	fprintf(stderr,"buffertempspeakerframesin adress: %d \n",buffertempspeaker);
+		buffertempspeaker++;
+
 		buffertemp1 = buffertemp1 + 6;
-       		// rc = fwrite(buffer, 1, size, out_fd);
 	    }
 	    fprintf(stderr,"buffertemp4 data: %d %d %d ... %d %d %d \n",*buffertemp4,*(buffertemp4+1),*(buffertemp4+2),*(buffertemp4+(frames-3)),*(buffertemp4+frames-2),*(buffertemp4+frames-1));
 	    printf("agc outfilename: %d \n",*out_fdAgc);
+
 	    WebRtcAgcProc(buffertemp4,out_fdAgc,frames,bufferAgcOutData);
 	    fprintf(stderr,"bufferAgcOutData adress: %d \n",bufferAgcOutData);
 	    fprintf(stderr,"buffertemp4 adress: %d \n",buffertemp4);
 	    fprintf(stderr,"buffertemp5framesout adress: %d \n",buffertemp5);
 	    printf("ns outfilename: %d \n",*out_fdNs);
+
+	    WebRtcAecProc(buffertempmicin,buffertempspeaker,out_fdAec,frames,bufferAecOutData);
+	    fprintf(stderr,"bufferAecOutData adress: %d \n",bufferAecOutData);
+	    printf("ns outfilename: %d \n",*out_fdAec);
+
 	    webRtcNsProc(bufferAgcOutData,out_fdNs,frames,bufferNsOutData,filter_state1,filter_state12,Synthesis_state1,Synthesis_state12);
 	    printf("int:%d\n",sizeof(int));
 	    printf("int16_t:%d\n",sizeof(int16_t));
@@ -271,7 +318,13 @@ int main()
    free(buffertemp1);
    free(buffertemp2);
    free(buffertemp3);
+   free(buffertempmicin);
+   free(buffertempspeaker);
    free(bufferAgcOutData);
+   free(bufferNsOutData);
+   free(bufferAecOutData);
+   free(bufferAecMicinData);
+   free(bufferAecSpeakerData);
    fclose(out_fd1);
    fclose(out_fd2);
    fclose(out_fd3);
@@ -279,4 +332,6 @@ int main()
    fclose(out_fd5);
    fclose(out_fd6);
    fclose(out_fdAgc);
+   fclose(out_fdNs);
+   fclose(out_fdAec);
 }
