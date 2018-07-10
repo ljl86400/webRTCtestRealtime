@@ -8,13 +8,16 @@
 #include "gain_control.h"
 #include "echo_cancellation.h"
 
+#define SAMPLES 8000
+#define FRAMES 160
+
 void webRtcNsProc(short * pData, FILE *outfilenameNs,int frames,short * pOutData,int* filter_state1,int* filter_state12,int* Synthesis_state1,int* Synthesis_state12)
 {
-	fprintf(stderr,"NS pData data: %d ... %d \n",*pData,*(pData+frames-1));
+
 	NsHandle *pNS_inst = NULL;
 	int nMode = 1;
 	int len = frames*2;
-	int fs = 16000;	
+	int fs = SAMPLES;	
 
 
 	if (0 != WebRtcNs_Create(&pNS_inst))
@@ -53,7 +56,6 @@ void webRtcNsProc(short * pData, FILE *outfilenameNs,int frames,short * pOutData
 			printf("open NS out file err! \n");
 		}
 		fwrite(pOutData, 1, len, outfilenameNs);
-		printf("ns outfilenameNs: %d \n",*outfilenameNs);
 		WebRtcNs_Free(pNS_inst);
 }
 
@@ -61,7 +63,7 @@ void WebRtcAgcProc(short * pData, FILE * outfilename,int frames,short * pOutData
 {
 
 	void *agcHandle = NULL;	
-	int fs = 16000;
+	int fs = SAMPLES;
 	WebRtcAgc_Create(&agcHandle);
 
 	int minLevel = 0;
@@ -80,7 +82,7 @@ void WebRtcAgcProc(short * pData, FILE * outfilename,int frames,short * pOutData
 	int micLevelOut = 0;
 
 	// memset(pData, 0, len);
-	fprintf(stderr,"AGC pDataFinal data: %d ... %d\n",*pData,*(pData+frames-1));
+	
 
 	int inMicLevel  = micLevelOut;
 	int outMicLevel = 0;
@@ -95,14 +97,17 @@ void WebRtcAgcProc(short * pData, FILE * outfilename,int frames,short * pOutData
 	fwrite(pOutData, 1, len, outfilename);
 
 	WebRtcAgc_Free(agcHandle);
+
 }
 
 void WebRtcAecProc(short *near_frame,short* far_frame,FILE * fp_out,int frames,short * out_frame)
 {
 
-	int fs = 16000;
+	int fs = SAMPLES;
 	int len = frames*sizeof(short);
 	void *aecmInst = NULL;
+	printf("aec_proc_near_frame data: %d %d %d ...  %d %d %d\n",*near_frame,*(near_frame + 1),*(near_frame + 2),*(near_frame + frames - 3),*(near_frame + frames -2),*(near_frame + frames - 1));
+	
 
 	WebRtcAec_Create(&aecmInst);
 	WebRtcAec_Init(aecmInst, fs, fs);
@@ -112,7 +117,8 @@ void WebRtcAecProc(short *near_frame,short* far_frame,FILE * fp_out,int frames,s
 	WebRtcAec_set_config(aecmInst, config);
 
 	WebRtcAec_BufferFarend(aecmInst, far_frame, frames);//对参考声音(回声)的处理
-	WebRtcAec_Process(aecmInst, near_frame, NULL, out_frame, NULL, frames,40,0);//回声消除
+	WebRtcAec_Process(aecmInst, near_frame, NULL, out_frame, NULL, frames,30,0);//回声消除
+	printf("aec_out_proc_frame data: %d %d %d ...  %d %d %d\n",*out_frame,*(out_frame + 1),*(out_frame + 2),*(out_frame + frames - 3),*(out_frame + frames - 2),*(out_frame + frames - 1));
 
 	fwrite(out_frame, 1, len, fp_out);
 
@@ -192,7 +198,7 @@ int main()
 
    /* set period size */
    // 周期长度（帧数） 
-   frames = 320;
+   frames = FRAMES;
    snd_pcm_hw_params_set_period_size_near(handle,params,&frames,&dir);
    /* write parameters to the driver */
    // 将配置写入驱动程序中
@@ -214,6 +220,8 @@ int main()
    bufferNsOutData = ( short * )malloc(frames*sizeof(short));
    bufferAecOutData = ( short * )malloc(frames*sizeof(short));
    bufferAecMicinData = ( short * )malloc(frames*sizeof(short));
+
+
    bufferAecSpeakerData = ( short * )malloc(frames*sizeof(short));
 
    // 记录声音的长度，单位uS 
@@ -245,15 +253,13 @@ int main()
 	buffertempmicin = bufferAecMicinData;
 	buffertempspeaker = bufferAecSpeakerData;
 
-	fprintf(stderr,"buffertemp4 adress: %d \n",buffertemp4);
-	fprintf(stderr,"buffertemp5pre adress: %d \n",buffertemp5);
+
+
 
 	int loopfor;
 	for(loopfor = 1;loopfor <= frames;loopfor++)
 	    {
-		fprintf(stderr,"loopfor data:  %d \n",loopfor);
 		int loopwhile = 6;
-		fprintf(stderr,"buffertemp2 data: %d %d %d %d %d %d\n",*buffertemp2,*buffertemp2++,*buffertemp2++,*buffertemp2++,*buffertemp2++,*buffertemp2++);
 		
 		buffertemp2++;
 
@@ -268,8 +274,6 @@ int main()
 		buffertemp3 = buffertemp3 + 1;
 		rc3 = fwrite(buffertemp3, 1, 2, out_fd3);
 		*buffertempmicin = *buffertemp3;
-		fprintf(stderr,"buffertempmicin data: %d %d %d \n",*(buffertempmicin-2),*(buffertempmicin-1),*buffertempmicin);
-	 	fprintf(stderr,"buffertempmicinframesin adress: %d \n",buffertempmicin);
 		buffertempmicin++;
 
 		buffertemp3 = buffertemp3 + 1;
@@ -281,32 +285,20 @@ int main()
 		buffertemp3 = buffertemp3 + 1;
 		rc6 = fwrite(buffertemp3, 1, 2, out_fd6);
 		*buffertempspeaker = *buffertemp3;
-		fprintf(stderr,"buffertempspeaker data: %d %d %d \n",*(buffertempspeaker-2),*(buffertempspeaker-1),*buffertempspeaker);
-	 	fprintf(stderr,"buffertempspeakerframesin adress: %d \n",buffertempspeaker);
 		buffertempspeaker++;
 
 		buffertemp1 = buffertemp1 + 6;
 	    }
-	    fprintf(stderr,"buffertemp4 data: %d %d %d ... %d %d %d \n",*buffertemp4,*(buffertemp4+1),*(buffertemp4+2),*(buffertemp4+(frames-3)),*(buffertemp4+frames-2),*(buffertemp4+frames-1));
-	    printf("agc outfilename: %d \n",*out_fdAgc);
 
 	    WebRtcAgcProc(buffertemp4,out_fdAgc,frames,bufferAgcOutData);
-	    fprintf(stderr,"bufferAgcOutData adress: %d \n",bufferAgcOutData);
-	    fprintf(stderr,"buffertemp4 adress: %d \n",buffertemp4);
-	    fprintf(stderr,"buffertemp5framesout adress: %d \n",buffertemp5);
-	    printf("ns outfilename: %d \n",*out_fdNs);
 
-	    WebRtcAecProc(buffertempmicin,buffertempspeaker,out_fdAec,frames,bufferAecOutData);
-	    fprintf(stderr,"bufferAecOutData adress: %d \n",bufferAecOutData);
-	    printf("ns outfilename: %d \n",*out_fdAec);
+
+	    WebRtcAecProc(bufferAecMicinData,bufferAecSpeakerData,out_fdAec,frames,bufferAecOutData);
+
 
 	    webRtcNsProc(bufferAgcOutData,out_fdNs,frames,bufferNsOutData,filter_state1,filter_state12,Synthesis_state1,Synthesis_state12);
-	    printf("int:%d\n",sizeof(int));
-	    printf("int16_t:%d\n",sizeof(int16_t));
-	    printf("int:%\n");
-	    fprintf(stderr,"bufferNsOutData adress: %d \n \n",bufferNsOutData);	
-       // rc = write(1, buffer, size);
-       // if ( rc != size )
+
+
        if ( rc != frames )
         {
             fprintf(stderr,"short write: wrote %d bytes\n \n",rc);
